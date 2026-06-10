@@ -4922,6 +4922,25 @@
       box-shadow: 0 0 18px rgba(40,223,255,.22);
     }
 
+    .chat-header-action-btn.danger,
+    .modal-btn.danger {
+      border-color: rgba(255,82,122,.30);
+      background: rgba(255,82,122,.075);
+      color: #FF9AB0;
+    }
+
+    .chat-header-action-btn.danger:hover,
+    .modal-btn.danger:hover {
+      color: #fff;
+      background: linear-gradient(135deg, rgba(255,82,122,.24), rgba(132,28,56,.92));
+      box-shadow: 0 0 18px rgba(255,82,122,.20);
+    }
+
+    .modal-btn.danger {
+      border: 1px solid rgba(255,82,122,.30);
+      font-weight: 850;
+    }
+
     .group-sender-name {
       font-size: 10.5px;
       color: #65EEFF;
@@ -5256,6 +5275,7 @@
         <div class="chat-header-actions" id="groupHeaderActions">
           <button class="chat-header-action-btn" onclick="openInviteGroupModal()">Invite</button>
           <button class="chat-header-action-btn" onclick="openGroupManageModal()">Atur Grup</button>
+          <button class="chat-header-action-btn danger" onclick="deleteActiveGroupRoom()">Hapus Grup</button>
         </div>
       </div>
 
@@ -5434,6 +5454,7 @@
       <button class="modal-btn primary" style="width:100%; margin-bottom:12px;" onclick="submitSaveGroupSettings()">Simpan Nama / Foto Grup</button>
       <div style="font-size:12px; color:rgba(255,255,255,0.45); margin-bottom:8px;">Member grup:</div>
       <div class="user-list-group" id="groupMemberContainer"></div>
+      <button class="modal-btn danger" id="deleteGroupFromManageBtn" style="width:100%; margin-top:12px;" onclick="deleteActiveGroupRoom()">Hapus Grup Permanen</button>
       <div class="modal-foot">
         <button class="modal-btn secondary" onclick="openInviteGroupModal()">Invite User</button>
         <button class="modal-btn secondary" onclick="closeGroupManageModal()">Tutup</button>
@@ -5779,6 +5800,37 @@
         groupRoomListArray.push(groupId);
         saveGroupListToLocal();
       }
+    }
+
+
+    function removeGroupFromLocalState(groupId) {
+      if (!groupId) return;
+      groupRoomListArray = groupRoomListArray.filter((id) => id !== groupId);
+      delete cacheGroupData[groupId];
+      delete cacheUnreadCounts[`group:${groupId}`];
+      saveGroupListToLocal();
+    }
+
+    function resetGroupChatView(messageText = "Pilih Teman Mengobrol.") {
+      if (unsubsMessages) { unsubsMessages(); unsubsMessages = null; }
+      activeRoomType = "personal";
+      activeGroupId = "";
+      activeGroupMeta = null;
+      passivePartner = "";
+      initialLoadComplete = false;
+      setGroupHeaderActionsVisible(false);
+      cancelLowerBarEditMode();
+      cancelReplyMode();
+
+      const flowBox = document.getElementById('messageFlowBox');
+      if (flowBox) flowBox.innerHTML = "";
+
+      document.getElementById('topHeaderTitle').innerText = messageText;
+      document.getElementById('topHeaderStatus').innerText = "Klik Start Chat atau pilih room lain";
+      document.getElementById('partnerHeaderAvatar').src = defaultAvatarSvg;
+      document.getElementById('dashboardPage')?.classList.remove('mobile-chat-active');
+      syncOwnPresence({ status: "online" });
+      buildGroupRoomsDOM();
     }
 
     function getRoleDefinition(role) {
@@ -6843,6 +6895,7 @@
           </div>
           <div class="chat-item-actions">
             <button class="tiny-profile-btn" type="button" data-group-open="1">Buka</button>
+            ${canManageGroup(groupData) ? `<button class="tiny-delete-chat-btn" type="button" data-delete-group="1" title="Hapus grup permanen">Hapus</button>` : ""}
             ${unreadBadgeHtml}
           </div>
         `;
@@ -6850,6 +6903,11 @@
         card.querySelector('[data-group-open="1"]')?.addEventListener('click', (event) => {
           event.stopPropagation();
           selectGroupChatRoom(groupId);
+        });
+
+        card.querySelector('[data-delete-group="1"]')?.addEventListener('click', (event) => {
+          event.stopPropagation();
+          deleteGroupRoom(groupId);
         });
 
         box.appendChild(card);
@@ -7119,11 +7177,24 @@
         groupRoomListArray = [...new Set([...nextGroupIds, ...groupRoomListArray.filter((id) => cacheGroupData[id] && isGroupMember(cacheGroupData[id]))])];
         saveGroupListToLocal();
 
-        if (activeRoomType === "group" && activeGroupId && cacheGroupData[activeGroupId]) {
-          activeGroupMeta = { id: activeGroupId, ...cacheGroupData[activeGroupId] };
-          document.getElementById('topHeaderTitle').innerText = getGroupName(activeGroupMeta);
-          document.getElementById('topHeaderStatus').innerText = `${getGroupMemberCount(activeGroupMeta)} member • Group Chat`;
-          document.getElementById('partnerHeaderAvatar').src = getGroupAvatar(activeGroupMeta);
+        if (activeRoomType === "group" && activeGroupId) {
+          const freshActiveGroup = cacheGroupData[activeGroupId];
+
+          if (!freshActiveGroup) {
+            const oldGroupId = activeGroupId;
+            removeGroupFromLocalState(oldGroupId);
+            resetGroupChatView("Grup sudah dihapus.");
+          } else if (!isGroupMember(freshActiveGroup)) {
+            const oldGroupId = activeGroupId;
+            removeGroupFromLocalState(oldGroupId);
+            resetGroupChatView("Kamu sudah dikeluarkan dari grup.");
+          } else {
+            activeGroupMeta = { id: activeGroupId, ...freshActiveGroup };
+            document.getElementById('topHeaderTitle').innerText = getGroupName(activeGroupMeta);
+            document.getElementById('topHeaderStatus').innerText = `${getGroupMemberCount(activeGroupMeta)} member • Group Chat`;
+            document.getElementById('partnerHeaderAvatar').src = getGroupAvatar(activeGroupMeta);
+            setGroupHeaderActionsVisible(true);
+          }
         }
 
         buildGroupRoomsDOM();
@@ -7797,6 +7868,8 @@
       document.getElementById('manageGroupNameInput').value = getGroupName(activeGroupMeta);
       document.getElementById('manageGroupPhotoInput').value = "";
       document.getElementById('manageGroupPhotoPreview').src = getGroupAvatar(activeGroupMeta);
+      const deleteBtn = document.getElementById('deleteGroupFromManageBtn');
+      if (deleteBtn) deleteBtn.style.display = canManageGroup(activeGroupMeta) ? 'block' : 'none';
       document.getElementById('groupManageModal').style.display = 'grid';
       renderGroupMemberList();
     };
@@ -7872,18 +7945,117 @@
         alert("Hanya owner grup/admin/owner dashboard yang bisa kick member.");
         return;
       }
-      if (username === activeGroupMeta.owner) return alert("Owner grup tidak bisa di-kick.");
-      if (!confirm(`Kick ${getProfileDisplayName(username)} dari grup ini?`)) return;
+
+      const targetUsername = getDisplayUsername(username);
+      if (!targetUsername) return;
+      if (targetUsername === activeGroupMeta.owner) return alert("Owner grup tidak bisa di-kick.");
+      if (targetUsername === loggedInUser) return alert("Kamu tidak bisa kick akun yang sedang dipakai.");
+      if (!confirm(`Kick ${getProfileDisplayName(targetUsername)} dari grup ini? User ini akan langsung kehilangan akses grup.`)) return;
+
+      const btn = document.querySelector(`#groupMemberContainer button[onclick*="${targetUsername.replace(/"/g, '&quot;')}"]`);
+      if (btn) { btn.classList.add('fast-saving'); btn.innerText = 'Kick...'; }
 
       try {
-        const nextMembers = (activeGroupMeta.members || []).filter((member) => getDisplayUsername(member) !== getDisplayUsername(username));
-        await updateDoc(doc(db, "chat_groups", activeGroupId), { members: nextMembers, updatedAt: serverTimestamp() });
-        activeGroupMeta = { ...activeGroupMeta, members: nextMembers };
+        const groupRef = doc(db, "chat_groups", activeGroupId);
+        const groupSnap = await getDoc(groupRef);
+        if (!groupSnap.exists()) return alert("Grup sudah tidak ditemukan.");
+
+        const freshGroup = { id: activeGroupId, ...(groupSnap.data() || {}) };
+        if (!canManageGroup(freshGroup)) return alert("Akses manage grup berubah. Kamu tidak bisa kick member.");
+        if (targetUsername === freshGroup.owner) return alert("Owner grup tidak bisa di-kick.");
+
+        const nextMembers = (freshGroup.members || [])
+          .map(getDisplayUsername)
+          .filter((member) => member !== targetUsername);
+
+        await updateDoc(groupRef, { members: nextMembers, updatedAt: serverTimestamp() });
+
+        activeGroupMeta = { ...freshGroup, members: nextMembers };
         cacheGroupData[activeGroupId] = activeGroupMeta;
+        document.getElementById('topHeaderStatus').innerText = `${getGroupMemberCount(activeGroupMeta)} member • Group Chat`;
         renderGroupMemberList();
         buildGroupRoomsDOM();
+        alert(`${getProfileDisplayName(targetUsername)} berhasil di-kick dari grup.`);
       } catch(e) {
+        console.error(e);
         alert("Gagal kick user dari grup.");
+      } finally {
+        if (btn) { btn.classList.remove('fast-saving'); btn.innerText = 'Kick'; }
+      }
+    };
+
+    window.deleteActiveGroupRoom = async function() {
+      if (!activeGroupId) return alert("Belum ada grup yang aktif.");
+      await deleteGroupRoom(activeGroupId);
+    };
+
+    window.deleteGroupRoom = async function(groupId) {
+      const targetGroupId = String(groupId || "");
+      if (!targetGroupId) return;
+
+      let groupData = cacheGroupData[targetGroupId] || (targetGroupId === activeGroupId ? activeGroupMeta : null);
+
+      try {
+        const groupRef = doc(db, "chat_groups", targetGroupId);
+        const groupSnap = await getDoc(groupRef);
+        if (!groupSnap.exists()) {
+          removeGroupFromLocalState(targetGroupId);
+          if (activeRoomType === "group" && activeGroupId === targetGroupId) resetGroupChatView("Grup sudah dihapus.");
+          buildGroupRoomsDOM();
+          return alert("Grup sudah tidak ada di database.");
+        }
+
+        groupData = { id: targetGroupId, ...(groupSnap.data() || {}) };
+        if (!canManageGroup(groupData)) {
+          alert("Hanya owner grup/admin/owner dashboard yang bisa hapus grup.");
+          return;
+        }
+
+        const groupLabel = getGroupName(groupData);
+        if (!confirm(`Hapus grup "${groupLabel}" secara permanen? Semua pesan grup akan ikut dihapus dari database dan grup hilang dari semua member.`)) return;
+
+        const actionButtons = Array.from(document.querySelectorAll('[data-delete-group="1"], #deleteGroupFromManageBtn, #groupHeaderActions .danger'));
+        actionButtons.forEach((button) => {
+          button.classList.add('fast-saving');
+          if (button.id === 'deleteGroupFromManageBtn') button.innerText = 'Menghapus Grup...';
+        });
+
+        const msgQuery = query(collection(db, "group_messages"), orderBy("timestamp", "asc"));
+        const msgSnap = await getDocs(msgQuery);
+        const deleteJobs = [];
+
+        msgSnap.forEach((messageDoc) => {
+          const item = messageDoc.data() || {};
+          if (item.groupId === targetGroupId) {
+            deleteJobs.push(deleteDoc(doc(db, "group_messages", messageDoc.id)));
+          }
+        });
+
+        if (deleteJobs.length) {
+          const results = await Promise.allSettled(deleteJobs);
+          const failed = results.filter((result) => result.status === "rejected");
+          if (failed.length) throw new Error(`Gagal menghapus ${failed.length} pesan grup.`);
+        }
+
+        await deleteDoc(groupRef);
+
+        removeGroupFromLocalState(targetGroupId);
+        closeGroupManageModal();
+
+        if (activeRoomType === "group" && activeGroupId === targetGroupId) {
+          resetGroupChatView("Grup berhasil dihapus.");
+        }
+
+        buildGroupRoomsDOM();
+        alert(deleteJobs.length ? "Grup dan semua pesan grup berhasil dihapus." : "Grup berhasil dihapus.");
+      } catch(e) {
+        console.error(e);
+        alert("Gagal menghapus grup. Cek permission Firestore atau koneksi internet.");
+      } finally {
+        Array.from(document.querySelectorAll('[data-delete-group="1"], #deleteGroupFromManageBtn, #groupHeaderActions .danger')).forEach((button) => {
+          button.classList.remove('fast-saving');
+          if (button.id === 'deleteGroupFromManageBtn') button.innerText = 'Hapus Grup Permanen';
+        });
       }
     };
 
@@ -8638,5 +8810,394 @@
     });
 
 </script>
+
+
+<style id="bubble-typography-alignment-fix">
+  /* FIX TYPOGRAPHY / LETTER ALIGNMENT DI SEMUA BUBBLE, PILLS, DAN BUTTON */
+  .section-label,
+  .section-label span,
+  .chat-item-name,
+  .status-indicator,
+  .preview-title,
+  .preview-hint,
+  .bubble .text-content-body,
+  .bubble .reply-preview-card,
+  .bubble-meta,
+  .time-text {
+    line-height: 1.2 !important;
+  }
+
+  .start-chat-btn,
+  .tiny-profile-btn,
+  .role-pill,
+  .user-role-badge,
+  .chat-item-actions .unread-badge-alert,
+  .modal-btn,
+  .preview-open-btn,
+  .send-action-btn,
+  .clip-btn,
+  .start-group-btn,
+  .group-open-btn,
+  .group-delete-btn,
+  .group-kick-btn {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    text-align: center !important;
+    line-height: 1 !important;
+    vertical-align: middle !important;
+    white-space: nowrap;
+  }
+
+  .start-chat-btn {
+    min-height: 34px !important;
+    padding: 0 14px !important;
+    border-radius: 14px !important;
+    gap: 6px !important;
+    font-size: 11px !important;
+    font-weight: 850 !important;
+  }
+
+  .tiny-profile-btn {
+    min-height: 34px !important;
+    padding: 0 12px !important;
+    border-radius: 12px !important;
+    gap: 6px !important;
+    font-size: 11px !important;
+    font-weight: 800 !important;
+    line-height: 1 !important;
+  }
+
+  .tiny-profile-btn::before {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    margin-right: 0 !important;
+    transform: translateY(-0.5px);
+  }
+
+  .role-pill,
+  .user-role-badge {
+    min-height: 22px !important;
+    padding: 0 10px !important;
+    gap: 5px !important;
+    font-size: 10px !important;
+    font-weight: 900 !important;
+    letter-spacing: .06em !important;
+  }
+
+  .chat-item-actions {
+    justify-content: center !important;
+    align-items: flex-end !important;
+    gap: 8px !important;
+  }
+
+  .chat-item-actions .tiny-profile-btn,
+  .chat-item-actions .unread-badge-alert {
+    width: 70px !important;
+    min-width: 70px !important;
+  }
+
+  .chat-item-actions .unread-badge-alert {
+    min-height: 24px !important;
+    height: 24px !important;
+    padding: 0 10px !important;
+    gap: 4px !important;
+    font-size: 10px !important;
+    font-weight: 900 !important;
+    line-height: 1 !important;
+  }
+
+  .chat-item-actions .unread-badge-alert::before {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    line-height: 1 !important;
+  }
+
+  .chat-item-card {
+    align-items: center !important;
+  }
+
+  .chat-item-card > div:nth-child(2) {
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: center !important;
+    min-height: 54px;
+  }
+
+  .chat-item-name {
+    display: flex !important;
+    align-items: center !important;
+    flex-wrap: wrap;
+    gap: 6px !important;
+    margin-bottom: 7px !important;
+  }
+
+  .chat-item-subline {
+    display: flex !important;
+    align-items: center !important;
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+    line-height: 1 !important;
+  }
+
+  .status-indicator {
+    display: inline-flex !important;
+    align-items: center !important;
+    line-height: 1 !important;
+  }
+
+  .section-label {
+    align-items: center !important;
+    line-height: 1.1 !important;
+  }
+
+  .action-link-btn {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 7px !important;
+    text-align: center !important;
+  }
+
+  .action-text {
+    display: block !important;
+    line-height: 1.15 !important;
+    text-align: center !important;
+  }
+
+  .bubble {
+    justify-content: center;
+  }
+
+  .bubble .text-content-body {
+    line-height: 1.5 !important;
+    word-break: break-word;
+  }
+
+  .bubble-meta {
+    align-items: center !important;
+    line-height: 1 !important;
+  }
+
+  @media (max-width: 420px) {
+    .start-chat-btn {
+      min-height: 32px !important;
+      padding: 0 12px !important;
+      font-size: 10px !important;
+    }
+
+    .chat-item-actions .tiny-profile-btn,
+    .chat-item-actions .unread-badge-alert {
+      width: 62px !important;
+      min-width: 62px !important;
+    }
+
+    .tiny-profile-btn {
+      min-height: 32px !important;
+      font-size: 10px !important;
+      padding: 0 10px !important;
+    }
+  }
+</style>
+
+
+
+<style id="personal-room-compact-mobile-fix">
+  /* FIX tambahan: perkecil kolom PERSONAL ROOM di mobile agar tidak tindih */
+  @media (max-width: 680px) {
+    .chat-list-container {
+      padding: 8px 8px 10px !important;
+      gap: 8px !important;
+    }
+
+    .section-label {
+      display: flex !important;
+      align-items: center !important;
+      justify-content: space-between !important;
+      gap: 6px !important;
+      padding: 0 0 2px !important;
+      font-size: 9px !important;
+      letter-spacing: .10em !important;
+      white-space: nowrap;
+    }
+
+    .section-label span {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .section-label span::before,
+    .section-label span::after {
+      margin: 0 4px !important;
+      font-size: 8px !important;
+    }
+
+    .start-chat-btn {
+      height: 28px !important;
+      min-height: 28px !important;
+      padding: 0 8px !important;
+      border-radius: 12px !important;
+      font-size: 9px !important;
+      gap: 4px !important;
+      flex: 0 0 auto !important;
+      margin-left: auto !important;
+    }
+
+    #activeChatRoomsBox {
+      gap: 8px !important;
+    }
+
+    .chat-item-card {
+      grid-template-columns: 40px minmax(0, 1fr) 56px !important;
+      gap: 8px !important;
+      padding: 9px !important;
+      border-radius: 14px !important;
+      min-height: auto !important;
+    }
+
+    .chat-item-card .partner-avatar-img {
+      width: 40px !important;
+      height: 40px !important;
+    }
+
+    .chat-item-card > div:nth-child(2) {
+      min-height: 40px !important;
+      justify-content: center !important;
+    }
+
+    .chat-item-name {
+      font-size: 12px !important;
+      margin-bottom: 4px !important;
+    }
+
+    .chat-item-subline {
+      gap: 5px !important;
+    }
+
+    .role-pill {
+      min-height: 16px !important;
+      padding: 0 6px !important;
+      font-size: 7.6px !important;
+      border-radius: 999px !important;
+    }
+
+    .status-indicator {
+      font-size: 9px !important;
+      gap: 4px !important;
+    }
+
+    .status-indicator.online::before,
+    .status-indicator.offline::before {
+      width: 6px !important;
+      height: 6px !important;
+    }
+
+    .chat-item-actions {
+      width: 56px !important;
+      gap: 5px !important;
+      align-items: stretch !important;
+    }
+
+    .chat-item-actions .tiny-profile-btn,
+    .chat-item-actions .unread-badge-alert {
+      width: 56px !important;
+      min-width: 56px !important;
+    }
+
+    .tiny-profile-btn {
+      height: 26px !important;
+      min-height: 26px !important;
+      padding: 0 4px !important;
+      border-radius: 9px !important;
+      font-size: 8.5px !important;
+      gap: 3px !important;
+    }
+
+    .tiny-profile-btn::before {
+      margin-right: 2px !important;
+      font-size: 8px !important;
+    }
+
+    .chat-item-actions .unread-badge-alert {
+      height: 20px !important;
+      min-height: 20px !important;
+      padding: 0 4px !important;
+      border-radius: 999px !important;
+      font-size: 8px !important;
+      gap: 3px !important;
+    }
+
+    .chat-item-actions .unread-badge-alert::before {
+      font-size: 6.8px !important;
+    }
+  }
+
+  @media (max-width: 420px) {
+    .section-label {
+      font-size: 8.6px !important;
+      gap: 5px !important;
+    }
+
+    .start-chat-btn {
+      height: 26px !important;
+      min-height: 26px !important;
+      padding: 0 7px !important;
+      font-size: 8.6px !important;
+    }
+
+    .chat-item-card {
+      grid-template-columns: 38px minmax(0, 1fr) 54px !important;
+      padding: 8px !important;
+      gap: 7px !important;
+    }
+
+    .chat-item-card .partner-avatar-img {
+      width: 38px !important;
+      height: 38px !important;
+    }
+
+    .chat-item-name {
+      font-size: 11.4px !important;
+    }
+
+    .role-pill {
+      min-height: 15px !important;
+      padding: 0 5px !important;
+      font-size: 7px !important;
+    }
+
+    .status-indicator {
+      font-size: 8.4px !important;
+    }
+
+    .chat-item-actions {
+      width: 54px !important;
+    }
+
+    .chat-item-actions .tiny-profile-btn,
+    .chat-item-actions .unread-badge-alert {
+      width: 54px !important;
+      min-width: 54px !important;
+    }
+
+    .tiny-profile-btn {
+      height: 24px !important;
+      min-height: 24px !important;
+      font-size: 8px !important;
+    }
+
+    .chat-item-actions .unread-badge-alert {
+      height: 18px !important;
+      min-height: 18px !important;
+      font-size: 7.4px !important;
+    }
+  }
+</style>
+
 </body>
 </html>
