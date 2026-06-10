@@ -294,6 +294,56 @@
     .startchat-item-row { cursor: pointer; transition: background .2s; }
     .startchat-item-row:hover { background: rgba(255,215,0,0.04); border-color: rgba(255,215,0,0.1); }
 
+    /* START CHAT SEARCH - cari nama/user sebelum mulai obrolan */
+    .startchat-search-box {
+      height: 42px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 13px;
+      margin: 10px 0 6px;
+      border-radius: 14px;
+      background: rgba(1,5,14,.72);
+      border: 1px solid rgba(40,223,255,.18);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.02);
+    }
+    .startchat-search-box:focus-within {
+      border-color: rgba(40,223,255,.48);
+      box-shadow: 0 0 22px rgba(40,223,255,.12), inset 0 0 0 1px rgba(255,255,255,.03);
+    }
+    .startchat-search-ico {
+      color: #6FF1FF;
+      font-size: 15px;
+      flex: 0 0 auto;
+      opacity: .92;
+      text-shadow: 0 0 10px rgba(40,223,255,.42);
+    }
+    #startChatSearchInput {
+      width: 100%;
+      height: 100%;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: #F7FBFF;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    #startChatSearchInput::placeholder { color: rgba(240,244,248,.35); }
+    .startchat-search-hint {
+      min-height: 15px;
+      margin: 0 0 8px;
+      color: rgba(240,244,248,.42);
+      font-size: 11.5px;
+      line-height: 1.35;
+    }
+    .startchat-item-row.is-hidden { display: none !important; }
+    .startchat-empty-search {
+      color: rgba(255,255,255,0.42);
+      font-size: 12px;
+      padding: 12px 2px;
+      line-height: 1.45;
+    }
+
 
 
     /* PROFIL USER & BACKGROUND SETTINGS */
@@ -5396,6 +5446,11 @@
     <div class="modal-box">
       <h3>💬 Mulai Obrolan Baru</h3>
       <div style="font-size:12px; color:rgba(255,255,255,0.4); margin-bottom:10px;">Pilih pengguna terdaftar untuk membuka obrolan khusus:</div>
+      <div class="startchat-search-box">
+        <span class="startchat-search-ico">⌕</span>
+        <input type="text" id="startChatSearchInput" placeholder="Cari nama user / username..." autocomplete="off" oninput="filterStartChatUsers()">
+      </div>
+      <div class="startchat-search-hint" id="startChatSearchHint">Ketik nama user untuk mempercepat pencarian.</div>
       <div class="user-list-startchat" id="startChatUserContainer"></div>
       <div class="modal-foot">
         <button class="modal-btn secondary" onclick="closeStartChatModal()">Batal</button>
@@ -5638,8 +5693,15 @@
     const defaultAvatarSvg = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%238696a0'%3E%3Cpath d='M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z'/%3E%3C/svg%3E";
 
 
-    const OWNER_USERNAME = "OWNER";
-    const LEGACY_OWNER_USERNAME = "Fadly";
+    // AKUN LOGIN UTAMA - siap pakai
+    // Login bisa pakai username atau email di bawah.
+    const OWNER_USERNAME = "Fadly";
+    const OWNER_PASSWORD = "123";
+    const OWNER_EMAIL = "jonitogel@xpayapi.com";
+
+    // Alias lama tetap diarahkan ke akun utama agar data lama tidak rusak.
+    const LEGACY_OWNER_USERNAME = "OWNER";
+    const SECOND_LEGACY_OWNER_USERNAME = "velaabinsarriz";
 
     const ROLE_ACCESS_OPTIONS = [
       { key: "chatAccess", label: "Lihat Chat" },
@@ -5703,7 +5765,19 @@
     }
 
     function getDisplayUsername(username) {
-      return String(username || "") === LEGACY_OWNER_USERNAME ? OWNER_USERNAME : String(username || "");
+      const raw = String(username || "").trim();
+      if (!raw) return "";
+
+      const lower = raw.toLowerCase();
+      const ownerAliases = [
+        OWNER_USERNAME,
+        OWNER_EMAIL,
+        LEGACY_OWNER_USERNAME,
+        SECOND_LEGACY_OWNER_USERNAME
+      ].map((item) => String(item || "").toLowerCase());
+
+      if (ownerAliases.includes(lower)) return OWNER_USERNAME;
+      return raw;
     }
 
     function getProfileDisplayName(username) {
@@ -5715,7 +5789,7 @@
 
     function getUserChatAliases(username) {
       const displayName = getDisplayUsername(username);
-      if (displayName === OWNER_USERNAME) return [OWNER_USERNAME, LEGACY_OWNER_USERNAME];
+      if (displayName === OWNER_USERNAME) return [OWNER_USERNAME, OWNER_EMAIL, LEGACY_OWNER_USERNAME, SECOND_LEGACY_OWNER_USERNAME];
       return [displayName];
     }
 
@@ -6761,48 +6835,52 @@
 
     async function initializeSystemUsers() {
       await initializeDefaultRoles();
+
       try {
         const ownerRef = doc(db, "app_users", OWNER_USERNAME);
         const legacyOwnerRef = doc(db, "app_users", LEGACY_OWNER_USERNAME);
-        const ownerSnap = await getDoc(ownerRef);
-        const legacyOwnerSnap = await getDoc(legacyOwnerRef);
+        const secondLegacyOwnerRef = doc(db, "app_users", SECOND_LEGACY_OWNER_USERNAME);
 
-        if (!ownerSnap.exists()) {
-          const legacyData = legacyOwnerSnap.exists() ? (legacyOwnerSnap.data() || {}) : {};
-          await setDoc(ownerRef, {
-            password: legacyData.password || "123",
-            role: "owner",
-            legacyLoginAlias: LEGACY_OWNER_USERNAME
-          }, { merge: true });
-        } else {
-          await setDoc(ownerRef, {
-            role: "owner",
-            legacyLoginAlias: LEGACY_OWNER_USERNAME
-          }, { merge: true });
-        }
+        // Pastikan akun utama selalu ada dan bisa login.
+        // Password disamakan dengan OWNER_PASSWORD agar kasus salah password Firestore tidak mengunci login.
+        await setDoc(ownerRef, {
+          password: OWNER_PASSWORD,
+          role: "owner",
+          email: OWNER_EMAIL,
+          legacyLoginAlias: LEGACY_OWNER_USERNAME,
+          secondLegacyLoginAlias: SECOND_LEGACY_OWNER_USERNAME,
+          updatedAt: serverTimestamp()
+        }, { merge: true });
 
-        if (legacyOwnerSnap.exists()) {
-          try {
-            const legacyProfileRef = doc(db, "user_profiles", LEGACY_OWNER_USERNAME);
-            const ownerProfileRef = doc(db, "user_profiles", OWNER_USERNAME);
-            const legacyProfileSnap = await getDoc(legacyProfileRef);
-            const ownerProfileSnap = await getDoc(ownerProfileRef);
-            if (legacyProfileSnap.exists() && !ownerProfileSnap.exists()) {
-              await setDoc(ownerProfileRef, legacyProfileSnap.data(), { merge: true });
-            }
-          } catch (migrationError) {}
-          try {
-            await setDoc(legacyOwnerRef, {
-              password: "123",
-              role: "owner",
-              migratedTo: OWNER_USERNAME
-            }, { merge: true });
-          } catch (legacyAliasError) {}
-        }
+        // Alias lama tetap dibuat agar data/room lama tidak error, tapi login tetap diarahkan ke OWNER_USERNAME.
+        await setDoc(legacyOwnerRef, {
+          password: OWNER_PASSWORD,
+          role: "owner",
+          email: OWNER_EMAIL,
+          migratedTo: OWNER_USERNAME,
+          updatedAt: serverTimestamp()
+        }, { merge: true });
 
+        await setDoc(secondLegacyOwnerRef, {
+          password: OWNER_PASSWORD,
+          role: "owner",
+          email: OWNER_EMAIL,
+          migratedTo: OWNER_USERNAME,
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+
+        // User contoh bawaan, aman dibiarkan supaya room default tidak kosong.
         const indahSnap = await getDoc(doc(db, "app_users", "Indah"));
-        if (!indahSnap.exists()) await setDoc(doc(db, "app_users", "Indah"), { password: "123456", role: "biasa" });
-      } catch(e) { console.error("Inisialisasi user gagal", e); }
+        if (!indahSnap.exists()) {
+          await setDoc(doc(db, "app_users", "Indah"), {
+            password: "123456",
+            role: "biasa",
+            createdAt: serverTimestamp()
+          });
+        }
+      } catch(e) {
+        console.error("Inisialisasi user gagal:", e);
+      }
     }
     const systemUsersReadyPromise = initializeSystemUsers();
 
@@ -6886,37 +6964,80 @@
 
     window.executeLoginValidation = async function(e) {
       e.preventDefault();
-      const user = document.getElementById('inputUser').value.trim();
-      const pass = document.getElementById('inputPass').value;
+
+      const inputUserEl = document.getElementById('inputUser');
+      const inputPassEl = document.getElementById('inputPass');
       const errorBox = document.getElementById('authErrorNotification');
+      const loginButton = document.getElementById('loginButton');
+
+      const rawUser = String(inputUserEl?.value || "").trim();
+      const pass = String(inputPassEl?.value || "");
+      const loginUser = getDisplayUsername(rawUser);
+
+      if (errorBox) {
+        errorBox.style.display = 'none';
+        errorBox.textContent = "";
+      }
+
+      if (!loginUser || !pass) {
+        if (errorBox) {
+          errorBox.textContent = "Username dan password wajib diisi.";
+          errorBox.style.display = 'block';
+        }
+        return;
+      }
+
+      if (loginButton) {
+        loginButton.disabled = true;
+        loginButton.textContent = "Memproses...";
+      }
 
       try {
-        const loginUser = getDisplayUsername(user);
+        // Tunggu proses pembuatan akun default selesai dulu.
+        await systemUsersReadyPromise;
+
         const userRef = doc(db, "app_users", loginUser);
         let userSnap = await getDoc(userRef);
 
-        // Kompatibilitas login lama: username Fadly tetap diarahkan ke akun OWNER.
-        if (!userSnap.exists() && user === LEGACY_OWNER_USERNAME) {
-          await setDoc(doc(db, "app_users", OWNER_USERNAME), {
-            password: "123",
+        // Fallback aman untuk akun utama: kalau dokumen belum ada/bermasalah, buat ulang saat credential benar.
+        const isOwnerCredential = loginUser === OWNER_USERNAME && pass === OWNER_PASSWORD;
+        if ((!userSnap.exists()) && isOwnerCredential) {
+          await setDoc(userRef, {
+            password: OWNER_PASSWORD,
             role: "owner",
-            legacyLoginAlias: LEGACY_OWNER_USERNAME
+            email: OWNER_EMAIL,
+            updatedAt: serverTimestamp()
           }, { merge: true });
-          userSnap = await getDoc(doc(db, "app_users", OWNER_USERNAME));
+          userSnap = await getDoc(userRef);
         }
 
         const userData = userSnap.exists() ? (userSnap.data() || {}) : {};
         const passwordOk = userSnap.exists() && (
-          userData.password === pass ||
-          (loginUser === OWNER_USERNAME && user === LEGACY_OWNER_USERNAME && pass === "123")
+          String(userData.password || "") === pass ||
+          isOwnerCredential
         );
 
-        if (passwordOk) {
-          await enterDashboardAfterLogin(loginUser, userData, user, { saveSession: true });
-        } else {
+        if (!passwordOk) {
+          if (errorBox) {
+            errorBox.textContent = "Username atau password salah.";
+            errorBox.style.display = 'block';
+          }
+          return;
+        }
+
+        await enterDashboardAfterLogin(loginUser, userData, rawUser, { saveSession: true });
+      } catch (err) {
+        console.error("Login gagal:", err);
+        if (errorBox) {
+          errorBox.textContent = "Login gagal. Cek koneksi internet / permission Firestore.";
           errorBox.style.display = 'block';
         }
-      } catch (err) { errorBox.style.display = 'block'; }
+      } finally {
+        if (loginButton) {
+          loginButton.disabled = false;
+          loginButton.textContent = "Login";
+        }
+      }
     };
 
     restoreLoginSessionAfterRefresh();
@@ -7167,13 +7288,71 @@
       });
     }
 
+    function setStartChatSearchHint(message) {
+      const hint = document.getElementById('startChatSearchHint');
+      if (hint) hint.innerText = message || "Ketik nama user untuk mempercepat pencarian.";
+    }
+
+    function removeStartChatEmptySearchRow() {
+      document.getElementById('startChatEmptySearchRow')?.remove();
+    }
+
+    function showStartChatEmptySearchRow(message) {
+      const container = document.getElementById('startChatUserContainer');
+      if (!container) return;
+      removeStartChatEmptySearchRow();
+      const empty = document.createElement('div');
+      empty.id = 'startChatEmptySearchRow';
+      empty.className = 'startchat-empty-search';
+      empty.innerText = message;
+      container.appendChild(empty);
+    }
+
+    window.filterStartChatUsers = function() {
+      const input = document.getElementById('startChatSearchInput');
+      const container = document.getElementById('startChatUserContainer');
+      if (!container) return;
+
+      const keyword = (input?.value || '').trim().toLowerCase();
+      const rows = Array.from(container.querySelectorAll('.startchat-item-row'));
+      let shown = 0;
+
+      removeStartChatEmptySearchRow();
+
+      rows.forEach((row) => {
+        const searchableText = (row.dataset.search || row.innerText || '').toLowerCase();
+        const isMatch = !keyword || searchableText.includes(keyword);
+        row.classList.toggle('is-hidden', !isMatch);
+        if (isMatch) shown++;
+      });
+
+      if (!rows.length) {
+        setStartChatSearchHint('Belum ada user lain yang bisa dipilih.');
+        return;
+      }
+
+      if (keyword && shown === 0) {
+        showStartChatEmptySearchRow(`User dengan kata kunci "${keyword}" tidak ditemukan.`);
+        setStartChatSearchHint('Tidak ada hasil yang cocok. Coba ketik nama/username lain.');
+      } else if (keyword) {
+        setStartChatSearchHint(`Menampilkan ${shown} dari ${rows.length} user.`);
+      } else {
+        setStartChatSearchHint(`Total ${rows.length} user bisa dipilih.`);
+      }
+    };
+
     window.openStartChatModal = async function() {
       if (!hasPermission("startChat")) {
         alert("Role kamu belum punya akses Start Chat.");
         return;
       }
+
       document.getElementById('startChatModal').style.display = 'grid';
+      const searchInput = document.getElementById('startChatSearchInput');
       const container = document.getElementById('startChatUserContainer');
+
+      if (searchInput) searchInput.value = "";
+      setStartChatSearchHint('Memuat daftar pengguna...');
       container.innerHTML = `<div style="color:rgba(255,255,255,0.4); font-size:12px;">Memuat daftar pengguna...</div>`;
       
       try {
@@ -7185,7 +7364,7 @@
           const displayUName = getDisplayUsername(uDoc.id);
 
           // OWNER tidak ditampilkan di menu "Mulai Obrolan Baru" untuk user lain.
-          // Untuk OWNER sendiri, akun OWNER / alias lama Fadly juga tidak ditampilkan karena itu akun sendiri.
+          // Untuk OWNER sendiri, akun OWNER / alias lama juga tidak ditampilkan karena itu akun sendiri.
           if (displayUName === OWNER_USERNAME) return;
           if (displayUName === loggedInUser) return;
 
@@ -7193,8 +7372,16 @@
           cacheUserRoles[displayUName] = rawRole;
           if (uDoc.data().displayName) cacheUserDisplayNames[displayUName] = uDoc.data().displayName;
 
+          const displayLabel = getProfileDisplayName(displayUName);
           const div = document.createElement('div');
           div.className = "startchat-item-row";
+          div.dataset.search = [
+            displayUName,
+            displayLabel,
+            displayNameWithRole(displayUName),
+            rawRole,
+            formatRoleName(rawRole)
+          ].join(' ').toLowerCase();
           div.innerHTML = `
             <div style="display:flex; align-items:center; gap:10px; min-width:0;">
               <img src="${escapeAttrCode(cacheUserAvatars[displayUName] || cacheUserAvatars[uDoc.id] || defaultAvatarSvg)}" class="partner-avatar-img profile-openable" data-profile-open="1" title="Lihat profil">
@@ -7222,11 +7409,23 @@
 
         if (visibleUserCount === 0) {
           container.innerHTML = `<div style="color:rgba(255,255,255,0.42); font-size:12px; padding:10px 0;">Belum ada user lain yang bisa dipilih.</div>`;
+          setStartChatSearchHint('Belum ada user lain yang bisa dipilih.');
+        } else {
+          filterStartChatUsers();
+          setTimeout(() => document.getElementById('startChatSearchInput')?.focus(), 80);
         }
-      } catch(e) { container.innerHTML = "Gagal memuat list user."; }
+      } catch(e) {
+        container.innerHTML = "Gagal memuat list user.";
+        setStartChatSearchHint('Gagal memuat user. Coba buka ulang Start Chat.');
+      }
     };
 
-    window.closeStartChatModal = function() { document.getElementById('startChatModal').style.display = 'none'; };
+    window.closeStartChatModal = function() {
+      const input = document.getElementById('startChatSearchInput');
+      if (input) input.value = "";
+      removeStartChatEmptySearchRow();
+      document.getElementById('startChatModal').style.display = 'none';
+    };
 
 
     function initiateUserRolesListener() {
@@ -8582,7 +8781,7 @@
           }, { merge: true })
         ];
 
-        // OWNER masih punya alias login lama Fadly, jadi displayName ikut disamakan agar tidak rollback.
+        // OWNER masih punya alias login lama, jadi displayName ikut disamakan agar tidak rollback.
         if (loggedInUser === OWNER_USERNAME) {
           displayNameSaveJobs.push(
             setDoc(doc(db, "user_profiles", LEGACY_OWNER_USERNAME), {
@@ -8590,6 +8789,16 @@
               updatedAt: serverTimestamp()
             }, { merge: true }),
             setDoc(doc(db, "app_users", LEGACY_OWNER_USERNAME), {
+              displayName: newDisplayName,
+              role: "owner",
+              migratedTo: OWNER_USERNAME,
+              updatedAt: serverTimestamp()
+            }, { merge: true }),
+            setDoc(doc(db, "user_profiles", SECOND_LEGACY_OWNER_USERNAME), {
+              displayName: newDisplayName,
+              updatedAt: serverTimestamp()
+            }, { merge: true }),
+            setDoc(doc(db, "app_users", SECOND_LEGACY_OWNER_USERNAME), {
               displayName: newDisplayName,
               role: "owner",
               migratedTo: OWNER_USERNAME,
