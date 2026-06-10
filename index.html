@@ -5569,7 +5569,7 @@
 
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-    import { getFirestore, collection, doc, setDoc, deleteDoc, updateDoc, addDoc, query, orderBy, onSnapshot, serverTimestamp, getDoc, getDocs } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+    import { getFirestore, collection, doc, setDoc, deleteDoc, updateDoc, addDoc, query, orderBy, onSnapshot, serverTimestamp, getDoc, getDocs, arrayUnion } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyAVTvV5yvQa0VuyCnaHOIBhZbNfVvnZF10",
@@ -5583,6 +5583,11 @@
 
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
+
+    // SESSION LOGIN: agar refresh halaman tidak logout.
+    // Catatan: aplikasi ini masih memakai auth custom sederhana berbasis Firestore, jadi sesi disimpan lokal di browser.
+    const LOGIN_SESSION_USER_KEY = "chat_dkk_saved_login_user";
+    const LOGIN_SESSION_AT_KEY = "chat_dkk_saved_login_at";
 
     let loggedInUser = "";
     let userRole = "biasa";
@@ -5787,6 +5792,117 @@
 
     function canManageGroup(groupData = activeGroupMeta) {
       return !!groupData && (groupData.owner === loggedInUser || hasPermission("adminPanel"));
+    }
+
+    function canDeleteGroupRoomAccess(groupData = activeGroupMeta) {
+      return !!groupData && (!!loggedInUser) && (isGroupMember(groupData) || hasPermission("adminPanel"));
+    }
+
+    function getGroupReadMembers(item) {
+      if (!Array.isArray(item?.readByMembers)) return [];
+      return item.readByMembers.map((name) => getDisplayUsername(name)).filter(Boolean);
+    }
+
+    function hasCurrentUserReadGroupMessage(item) {
+      if (!loggedInUser || !item) return false;
+      return getGroupReadMembers(item).includes(getDisplayUsername(loggedInUser));
+    }
+
+    function replacePersonalUnreadCounts(nextCounts = {}) {
+      Object.keys(cacheUnreadCounts)
+        .filter((key) => !String(key).startsWith('group:'))
+        .forEach((key) => delete cacheUnreadCounts[key]);
+
+      Object.entries(nextCounts).forEach(([key, value]) => {
+        const total = Number(value || 0);
+        if (total > 0) cacheUnreadCounts[key] = total;
+      });
+    }
+
+    function replaceGroupUnreadCounts(nextCounts = {}) {
+      Object.keys(cacheUnreadCounts)
+        .filter((key) => String(key).startsWith('group:'))
+        .forEach((key) => delete cacheUnreadCounts[key]);
+
+      Object.entries(nextCounts).forEach(([key, value]) => {
+        const total = Number(value || 0);
+        if (total > 0) cacheUnreadCounts[key] = total;
+      });
+    }
+
+    function recomputePersonalUnreadCountsFromSnapshot(snapshot) {
+      const nextCounts = {};
+      snapshot.forEach((messageDoc) => {
+        const item = messageDoc.data() || {};
+        const receiver = getDisplayUsername(item.receiver || item.receiverAlias || '');
+        if (receiver !== loggedInUser) return;
+        if (item.seenByReceiver) return;
+
+        const otherParty = getOtherPartyFromMessage(item, loggedInUser);
+        if (!otherParty) return;
+        nextCounts[otherParty] = (nextCounts[otherParty] || 0) + 1;
+      });
+      replacePersonalUnreadCounts(nextCounts);
+    }
+
+    function recomputeGroupUnreadCountsFromSnapshot(snapshot) {
+      const nextCounts = {};
+      snapshot.forEach((messageDoc) => {
+        const item = messageDoc.data() || {};
+        const groupId = String(item.groupId || '');
+        if (!groupId) return;
+        if (getDisplayUsername(item.sender || '') === loggedInUser) return;
+        const groupData = cacheGroupData[groupId];
+        if (!groupData || !isGroupMember(groupData)) return;
+        if (hasCurrentUserReadGroupMessage(item)) return;
+        const unreadKey = `group:${groupId}`;
+        nextCounts[unreadKey] = (nextCounts[unreadKey] || 0) + 1;
+      });
+      replaceGroupUnreadCounts(nextCounts);
+    }
+
+    async function markAllGroupMessagesInActiveRoomAsRead() {
+      if (!loggedInUser || activeRoomType !== 'group' || !activeGroupId) return;
+      try {
+        const roomSnapshot = await getDocs(query(collection(db, 'group_messages'), orderBy('timestamp', 'asc')));
+        const jobs = [];
+        roomSnapshot.forEach((messageDoc) => {
+          const data = messageDoc.data() || {};
+          const isTargetGroup = String(data.groupId || '') === String(activeGroupId);
+          const isOtherSender = getDisplayUsername(data.sender || '') !== loggedInUser;
+          const alreadyRead = hasCurrentUserReadGroupMessage(data);
+          if (isTargetGroup && isOtherSender && !alreadyRead) {
+            jobs.push(updateDoc(doc(db, 'group_messages', messageDoc.id), {
+              readByMembers: arrayUnion(loggedInUser),
+              lastReadAt: serverTimestamp()
+            }));
+          }
+        });
+        if (jobs.length) await Promise.allSettled(jobs);
+      } catch (error) {
+        console.warn('Gagal mark semua pesan grup sebagai dibaca:', error);
+      }
+    }
+
+    async function markGroupMessageAsReadIfNeeded(docId, item) {
+      if (!docId || !item || !loggedInUser) return;
+      if (activeRoomType !== 'group' || !activeGroupId) return;
+      if (String(item.groupId || '') !== String(activeGroupId)) return;
+      if (getDisplayUsername(item.sender || '') === loggedInUser) return;
+      if (hasCurrentUserReadGroupMessage(item)) return;
+      if (readReceiptLocks[`group:${docId}`]) return;
+
+      readReceiptLocks[`group:${docId}`] = true;
+      try {
+        await updateDoc(doc(db, 'group_messages', docId), {
+          readByMembers: arrayUnion(loggedInUser),
+          lastReadAt: serverTimestamp()
+        });
+      } catch (error) {
+        console.warn('Gagal update baca grup:', error);
+      } finally {
+        setTimeout(() => { delete readReceiptLocks[`group:${docId}`]; }, 2500);
+      }
     }
 
     function setGroupHeaderActionsVisible(isVisible) {
@@ -6688,7 +6804,85 @@
         if (!indahSnap.exists()) await setDoc(doc(db, "app_users", "Indah"), { password: "123456", role: "biasa" });
       } catch(e) { console.error("Inisialisasi user gagal", e); }
     }
-    initializeSystemUsers();
+    const systemUsersReadyPromise = initializeSystemUsers();
+
+    async function enterDashboardAfterLogin(loginUser, userData = {}, originalInputUser = loginUser, options = {}) {
+      if (!loginUser) return;
+
+      loggedInUser = getDisplayUsername(loginUser);
+      userRole = normalizeRoleId((loggedInUser === OWNER_USERNAME || originalInputUser === LEGACY_OWNER_USERNAME) ? "owner" : (userData.role || "biasa"));
+      cacheUserRoles[loggedInUser] = userRole;
+
+      if (String(userData.displayName || "").trim()) {
+        cacheUserDisplayNames[loggedInUser] = String(userData.displayName || "").trim();
+      }
+
+      if (options.saveSession !== false) {
+        localStorage.setItem(LOGIN_SESSION_USER_KEY, loggedInUser);
+        localStorage.setItem(LOGIN_SESSION_AT_KEY, String(Date.now()));
+      }
+
+      document.getElementById('loginPage').style.display = 'none';
+      document.getElementById('dashboardPage').style.display = 'grid';
+      syncCurrentUserHeader();
+      applyCurrentUserAccess();
+
+      await setDoc(doc(db, "user_presence", loggedInUser), {
+        status: "online",
+        activeRoom: "",
+        isWindowActive: document.visibilityState === "visible",
+        last_changed: serverTimestamp()
+      }, { merge: true });
+
+      unlockNotificationAudio();
+      startPresenceHeartbeat();
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission().catch(() => {});
+      }
+
+      initiateRoleDefinitionsListener();
+      initiateUserRolesListener();
+      initiateProfilePhotoListener();
+      initiateGlobalRoomsAndNotificationEngine();
+      initiateGroupRoomsListener();
+      initiateGroupMessageNotificationEngine();
+
+      // Pulihkan daftar room dari localStorage, lalu listener global akan melengkapi dari semua riwayat Firestore.
+      restoreRoomListFromLocal();
+      restoreGroupListFromLocal();
+      buildVerticalChatRoomsDOM();
+      buildGroupRoomsDOM();
+
+      // Pilih default partner hanya jika belum ada room tersimpan.
+      const targetDefault = (loggedInUser === OWNER_USERNAME) ? "Indah" : OWNER_USERNAME;
+      if (roomListArray.length === 0) addPartnerToActiveRoomList(targetDefault);
+      selectActiveChatRoom(roomListArray[0] || targetDefault);
+    }
+
+    async function restoreLoginSessionAfterRefresh() {
+      const savedUser = getDisplayUsername(localStorage.getItem(LOGIN_SESSION_USER_KEY) || "");
+      if (!savedUser || loggedInUser) return;
+
+      try {
+        await systemUsersReadyPromise;
+        if (loggedInUser) return;
+
+        const userRef = doc(db, "app_users", savedUser);
+        const userSnap = await getDoc(userRef);
+
+        if (!userSnap.exists()) {
+          localStorage.removeItem(LOGIN_SESSION_USER_KEY);
+          localStorage.removeItem(LOGIN_SESSION_AT_KEY);
+          return;
+        }
+
+        await enterDashboardAfterLogin(savedUser, userSnap.data() || {}, savedUser, { saveSession: false, autoRestore: true });
+      } catch (error) {
+        console.warn("Gagal restore session login:", error);
+        localStorage.removeItem(LOGIN_SESSION_USER_KEY);
+        localStorage.removeItem(LOGIN_SESSION_AT_KEY);
+      }
+    }
 
     window.executeLoginValidation = async function(e) {
       e.preventDefault();
@@ -6718,53 +6912,14 @@
         );
 
         if (passwordOk) {
-          loggedInUser = loginUser;
-          userRole = normalizeRoleId((loggedInUser === OWNER_USERNAME || user === LEGACY_OWNER_USERNAME) ? "owner" : (userData.role || "biasa"));
-          cacheUserRoles[loggedInUser] = userRole;
-          if (String(userData.displayName || "").trim()) {
-            cacheUserDisplayNames[loggedInUser] = String(userData.displayName || "").trim();
-          }
-          
-          document.getElementById('loginPage').style.display = 'none';
-          document.getElementById('dashboardPage').style.display = 'grid';
-          syncCurrentUserHeader();
-
-          applyCurrentUserAccess();
-
-          await setDoc(doc(db, "user_presence", loggedInUser), {
-            status: "online",
-            activeRoom: "",
-            isWindowActive: document.visibilityState === "visible",
-            last_changed: serverTimestamp()
-          }, { merge: true });
-          unlockNotificationAudio();
-          startPresenceHeartbeat();
-          if ('Notification' in window && Notification.permission === 'default') {
-            Notification.requestPermission().catch(() => {});
-          }
-          
-          initiateRoleDefinitionsListener();
-          initiateUserRolesListener();
-          initiateProfilePhotoListener();
-          initiateGlobalRoomsAndNotificationEngine();
-          initiateGroupRoomsListener();
-          initiateGroupMessageNotificationEngine();
-
-          // Pulihkan daftar room dari localStorage, lalu listener global akan melengkapi dari semua riwayat Firestore.
-          restoreRoomListFromLocal();
-          restoreGroupListFromLocal();
-          buildVerticalChatRoomsDOM();
-          buildGroupRoomsDOM();
-
-          // Pilih default partner hanya jika belum ada room tersimpan.
-          const targetDefault = (loggedInUser === OWNER_USERNAME) ? "Indah" : OWNER_USERNAME;
-          if (roomListArray.length === 0) addPartnerToActiveRoomList(targetDefault);
-          selectActiveChatRoom(roomListArray[0] || targetDefault);
+          await enterDashboardAfterLogin(loginUser, userData, user, { saveSession: true });
         } else {
           errorBox.style.display = 'block';
         }
       } catch (err) { errorBox.style.display = 'block'; }
     };
+
+    restoreLoginSessionAfterRefresh();
 
     // FUNGSI UTAMA: Menambah Target ke List Tanpa Mengeliminasi Teman Sebelumnya
     function addPartnerToActiveRoomList(partnerName) {
@@ -6799,7 +6954,9 @@
       buildVerticalChatRoomsDOM();
       syncOwnPresence({ status: "online" });
       markAllMessagesInActiveRoomAsRead();
+      markAllGroupMessagesInActiveRoomAsRead();
       setTimeout(markAllMessagesInActiveRoomAsRead, 350);
+      setTimeout(markAllGroupMessagesInActiveRoomAsRead, 350);
       initiatePresenceListener();
       initiateMessagesListener();
     };
@@ -6895,7 +7052,7 @@
           </div>
           <div class="chat-item-actions">
             <button class="tiny-profile-btn" type="button" data-group-open="1">Buka</button>
-            ${canManageGroup(groupData) ? `<button class="tiny-delete-chat-btn" type="button" data-delete-group="1" title="Hapus grup permanen">Hapus</button>` : ""}
+            ${canDeleteGroupRoomAccess(groupData) ? `<button class="tiny-delete-chat-btn" type="button" data-delete-group="1" title="Hapus grup permanen">Hapus</button>` : ""}
             ${unreadBadgeHtml}
           </div>
         `;
@@ -6938,6 +7095,8 @@
       buildVerticalChatRoomsDOM();
       buildGroupRoomsDOM();
       syncOwnPresence({ status: "online" });
+      markAllGroupMessagesInActiveRoomAsRead();
+      setTimeout(markAllGroupMessagesInActiveRoomAsRead, 300);
       initiateMessagesListener();
     };
 
@@ -7120,7 +7279,8 @@
 
       globalNotificationReady = false;
       unsubsRoomsNotification = onSnapshot(q, { includeMetadataChanges: true }, (snapshot) => {
-        let updateRequired = rebuildRoomsFromSnapshot(snapshot);
+        rebuildRoomsFromSnapshot(snapshot);
+        recomputePersonalUnreadCountsFromSnapshot(snapshot);
 
         snapshot.docChanges().forEach((change) => {
           if (change.type === "added") {
@@ -7131,26 +7291,20 @@
             addPartnerToActiveRoomList(otherParty);
 
             if (isMessageFromTo(item, otherParty, loggedInUser) && otherParty !== passivePartner) {
-              cacheUnreadCounts[otherParty] = (cacheUnreadCounts[otherParty] || 0) + 1;
               if (shouldNotifyIncomingMessage(change.doc.id, item, globalNotificationReady)) {
                 const previewText = item.textMessage || (item.imagePayload ? "Mengirim gambar" : "Mengirim pesan baru");
                 playLineNotificationSound();
                 showDesktopNotification(`Pesan baru dari ${getProfileDisplayName(otherParty)}`, previewText, otherParty);
               }
             }
-
-            updateRequired = true;
           }
         });
 
         globalNotificationReady = true;
+        buildVerticalChatRoomsDOM();
 
-        if (updateRequired || roomListArray.length > 0) {
-          buildVerticalChatRoomsDOM();
-
-          if (!passivePartner && roomListArray.length > 0) {
-            selectActiveChatRoom(roomListArray[0]);
-          }
+        if (!passivePartner && roomListArray.length > 0) {
+          selectActiveChatRoom(roomListArray[0]);
         }
       });
     }
@@ -7209,7 +7363,7 @@
       groupNotificationReady = false;
 
       unsubsGroupMessagesNotification = onSnapshot(q, { includeMetadataChanges: true }, (snapshot) => {
-        let updateRequired = false;
+        recomputeGroupUnreadCountsFromSnapshot(snapshot);
 
         snapshot.docChanges().forEach((change) => {
           if (change.type !== "added") return;
@@ -7225,9 +7379,6 @@
 
           const isCurrentOpenGroup = activeRoomType === "group" && activeGroupId === groupId;
           if (!isCurrentOpenGroup) {
-            const key = `group:${groupId}`;
-            cacheUnreadCounts[key] = (cacheUnreadCounts[key] || 0) + 1;
-
             if (shouldNotifyIncomingMessage(change.doc.id, item, groupNotificationReady)) {
               const senderLabel = getProfileDisplayName(item.sender || "");
               const previewText = item.textMessage || (item.imagePayload ? "Mengirim gambar" : "Mengirim pesan baru");
@@ -7241,14 +7392,10 @@
               );
             }
           }
-
-          updateRequired = true;
         });
 
         groupNotificationReady = true;
-        if (updateRequired) {
-          buildGroupRoomsDOM();
-        }
+        buildGroupRoomsDOM();
       });
     }
 
@@ -7329,6 +7476,9 @@
 
           if (activeRoomType === "personal" && isPartnerSender) {
             markMessageAsReadIfNeeded(docId, item);
+          }
+          if (activeRoomType === "group" && !isMeSender) {
+            markGroupMessageAsReadIfNeeded(docId, item);
           }
 
           const editLabel = item.edited ? `<span class="edited-marker">(diedit)</span>` : '';
@@ -7566,7 +7716,8 @@
           ? {
               ...commonMessageData,
               groupId: activeGroupId,
-              groupName: getGroupName(activeGroupMeta)
+              groupName: getGroupName(activeGroupMeta),
+              readByMembers: [loggedInUser]
             }
           : {
               ...commonMessageData,
@@ -7869,7 +8020,7 @@
       document.getElementById('manageGroupPhotoInput').value = "";
       document.getElementById('manageGroupPhotoPreview').src = getGroupAvatar(activeGroupMeta);
       const deleteBtn = document.getElementById('deleteGroupFromManageBtn');
-      if (deleteBtn) deleteBtn.style.display = canManageGroup(activeGroupMeta) ? 'block' : 'none';
+      if (deleteBtn) deleteBtn.style.display = canDeleteGroupRoomAccess(activeGroupMeta) ? 'block' : 'none';
       document.getElementById('groupManageModal').style.display = 'grid';
       renderGroupMemberList();
     };
@@ -8006,8 +8157,8 @@
         }
 
         groupData = { id: targetGroupId, ...(groupSnap.data() || {}) };
-        if (!canManageGroup(groupData)) {
-          alert("Hanya owner grup/admin/owner dashboard yang bisa hapus grup.");
+        if (!canDeleteGroupRoomAccess(groupData)) {
+          alert("Semua member grup (admin, owner, user) bisa hapus grup ini. Kamu tidak punya akses karena bukan member grup tersebut.");
           return;
         }
 
@@ -8285,6 +8436,8 @@
     };
 
     window.triggerSignOut = async function() {
+      localStorage.removeItem(LOGIN_SESSION_USER_KEY);
+      localStorage.removeItem(LOGIN_SESSION_AT_KEY);
       if (presenceSyncTimer) { clearInterval(presenceSyncTimer); presenceSyncTimer = null; }
       if (loggedInUser) await setDoc(doc(db, "user_presence", loggedInUser), {
         status: "offline",
@@ -8745,7 +8898,9 @@
       syncOwnPresence({ status: document.getElementById('typedMessageInput')?.value ? 'typing' : 'online' });
       if (!document.hidden) {
         markAllMessagesInActiveRoomAsRead();
+        markAllGroupMessagesInActiveRoomAsRead();
         setTimeout(markAllMessagesInActiveRoomAsRead, 350);
+        setTimeout(markAllGroupMessagesInActiveRoomAsRead, 350);
       }
     });
 
@@ -8753,7 +8908,9 @@
       if (!loggedInUser) return;
       syncOwnPresence({ status: 'online' });
       markAllMessagesInActiveRoomAsRead();
+      markAllGroupMessagesInActiveRoomAsRead();
       setTimeout(markAllMessagesInActiveRoomAsRead, 350);
+      setTimeout(markAllGroupMessagesInActiveRoomAsRead, 350);
     });
 
     window.addEventListener('beforeunload', () => {
@@ -8783,7 +8940,9 @@
     window.forceRefreshReadReceiptNow = async function() {
       try {
         await markAllMessagesInActiveRoomAsRead();
+        await markAllGroupMessagesInActiveRoomAsRead();
         setTimeout(markAllMessagesInActiveRoomAsRead, 250);
+        setTimeout(markAllGroupMessagesInActiveRoomAsRead, 250);
       } catch (error) {}
     };
 
